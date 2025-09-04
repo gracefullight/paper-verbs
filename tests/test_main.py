@@ -6,8 +6,8 @@ import pytest
 from main import main
 
 
-def test_main_prints_hello(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_runs_cli_and_reports_no_pdfs(monkeypatch: pytest.MonkeyPatch) -> None:
     output = StringIO()
     monkeypatch.setattr(sys, "stdout", output)
     main()
-    assert "Hello from starter!" in output.getvalue()
+    assert "No PDFs found" in output.getvalue()

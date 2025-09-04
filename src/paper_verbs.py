@@ -10,9 +10,23 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 
-import fitz  # PyMuPDF
-import pandas as pd
-from tqdm import tqdm
+# Optional heavy deps: import lazily or with fallbacks so import of this
+# module doesn't fail in environments without them (e.g., during tests).
+try:  # PyMuPDF
+    import fitz  # type: ignore
+except Exception:  # pragma: no cover - only for environments without PyMuPDF
+    fitz = None  # type: ignore[assignment]
+
+try:  # pandas
+    import pandas as pd  # type: ignore
+except Exception:  # pragma: no cover - only for environments without pandas
+    pd = None  # type: ignore[assignment]
+
+try:  # tqdm
+    from tqdm import tqdm  # type: ignore
+except Exception:  # pragma: no cover - only for environments without tqdm
+    def tqdm(iterable, **kwargs):  # type: ignore[no-redef]
+        return iterable
 
 # ===== spaCy: English =====
 try:
@@ -38,6 +52,8 @@ EN_POS_KEEP: set[str] = {"VERB", "AUX"}  # include AUX by default
 def extract_text_from_pdf(pdf_path: Path) -> str:
     """Extract text from PDF using PyMuPDF and remove trailing References-like sections."""
     try:
+        if fitz is None:  # type: ignore[truthy-function]
+            raise ImportError("PyMuPDF (fitz) is not installed")
         doc = fitz.open(pdf_path)
         texts: list[str] = []
         for page in doc:
@@ -242,9 +258,6 @@ def process_pdfs(
     Returns:
       verb_counts, verb_examples, phrase_counts, phrase_examples, tense_counts, voice_counts
     """
-    if _NLP_EN is None:
-        raise RuntimeError("spaCy(en_core_web_sm)가 설치/다운로드되지 않았습니다.")
-
     verb_counts: Counter[str] = Counter()
     phrase_counts: Counter[str] = Counter()
     tense_counts_total: Counter[str] = Counter()
@@ -263,6 +276,9 @@ def process_pdfs(
             tense_counts_total,
             voice_counts_total,
         )
+
+    if _NLP_EN is None:
+        raise RuntimeError("spaCy(en_core_web_sm)가 설치/다운로드되지 않았습니다.")
 
     for pdf in tqdm(pdfs, desc="PDFs"):
         text = extract_text_from_pdf(pdf)
@@ -352,6 +368,8 @@ def process_pdfs(
 def save_verb_csv(
     verb_counts: Counter[str], verb_examples: dict[str, list[str]], out_csv: Path
 ) -> pd.DataFrame:
+    if pd is None:
+        raise RuntimeError("pandas가 설치되어 있지 않습니다.")
     rows: list[dict[str, object]] = []
     for rank, (lemma, cnt) in enumerate(verb_counts.most_common(), start=1):
         rows.append(
@@ -371,6 +389,8 @@ def save_verb_csv(
 def save_phrase_csv(
     phrase_counts: Counter[str], phrase_examples: dict[str, list[str]], out_csv: Path
 ) -> pd.DataFrame:
+    if pd is None:
+        raise RuntimeError("pandas가 설치되어 있지 않습니다.")
     rows: list[dict[str, object]] = []
     for rank, (phrase, cnt) in enumerate(phrase_counts.most_common(), start=1):
         rows.append(

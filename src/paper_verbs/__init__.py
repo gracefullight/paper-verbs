@@ -1,2 +1,0 @@
-"""Paper verbs analysis module."""
-
