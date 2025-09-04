@@ -26,14 +26,6 @@ try:  # PyMuPDF
 except Exception:  # pragma: no cover - only for environments without PyMuPDF
     fitz = None
 
-try:  # pandas
-    import pandas as _pd
-
-    pd: Any | None = _pd
-except Exception:  # pragma: no cover - only for environments without pandas
-    pd = None
-
-
 # tqdm: import at module top-level with fallback
 try:  # pragma: no cover - optional dep
     from tqdm import tqdm
