@@ -15,5 +15,6 @@
   "python.linting.enabled": true,
   "python.linting.mypyEnabled": true,
   "python.testing.pytestEnabled": true,
-  "python.testing.pytestArgs": ["tests"]
+  "python.testing.pytestArgs": ["tests"],
+  "chatgpt.openOnStartup": true
 }

@@ -1,49 +1,89 @@
-#!/usr/bin/env python3
-# ruff: noqa: T201, BLE001
-
 from __future__ import annotations
 
-import argparse
+import importlib
 import re
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
+
+from pandas import DataFrame
+from spacy.language import Language
+from spacy.tokens import Doc, Token
+
+# Project paths
+MODULE_DIR = Path(__file__).resolve().parent
+ASSET_DIR = MODULE_DIR / "assets"
 
 # Optional heavy deps: import lazily or with fallbacks so import of this
 # module doesn't fail in environments without them (e.g., during tests).
 try:  # PyMuPDF
-    import fitz  # type: ignore
+    import fitz as _fitz
+
+    fitz: Any | None = _fitz
 except Exception:  # pragma: no cover - only for environments without PyMuPDF
-    fitz = None  # type: ignore[assignment]
+    fitz = None
 
 try:  # pandas
-    import pandas as pd  # type: ignore
-except Exception:  # pragma: no cover - only for environments without pandas
-    pd = None  # type: ignore[assignment]
+    import pandas as _pd
 
-try:  # tqdm
-    from tqdm import tqdm  # type: ignore
+    pd: Any | None = _pd
+except Exception:  # pragma: no cover - only for environments without pandas
+    pd = None
+
+
+# tqdm: import at module top-level with fallback
+try:  # pragma: no cover - optional dep
+    from tqdm import tqdm
 except Exception:  # pragma: no cover - only for environments without tqdm
-    def tqdm(iterable, **kwargs):  # type: ignore[no-redef]
+
+    def tqdm(iterable: Iterable[Any], **kwargs: Any) -> Iterable[Any]:
         return iterable
 
-# ===== spaCy: English =====
+
+"""spaCy: English (lazy loader without auto-download)."""
+spacy: Any | None
 try:
-    import spacy
+    import spacy as _spacy
 
-    _NLP_EN = spacy.load("en_core_web_sm")
-except Exception:
-    _NLP_EN = None
+    spacy = _spacy
+except Exception:  # pragma: no cover - optional dep
+    spacy = None
 
-from typing import TYPE_CHECKING
+_NLP_EN: Language | None = None
 
-if TYPE_CHECKING:
-    from spacy.tokens import Doc, Token
+
+def get_nlp_en() -> Language | None:
+    """Return a cached spaCy English pipeline.
+    Tries package import (en_core_web_sm.load()) first, then spacy.load('en_core_web_sm').
+    Returns None if unavailable. Emits failure reasons to stderr for debugging.
+    """
+    global _NLP_EN
+    if _NLP_EN is not None:
+        return _NLP_EN
+    if spacy is None:
+        return None
+    # 1) Prefer direct package import to avoid env/path issues
+    try:
+        pkg = importlib.import_module("en_core_web_sm")
+        _NLP_EN = pkg.load()
+        return _NLP_EN
+    except Exception as e1:
+        sys.stderr.write(f"[WARN] Failed en_core_web_sm.load(): {e1}\n")
+    # 2) Fallback to spacy.load
+    try:
+        _NLP_EN = spacy.load("en_core_web_sm")
+        return _NLP_EN
+    except Exception as e2:
+        sys.stderr.write(f"[WARN] Failed spacy.load('en_core_web_sm'): {e2}\n")
+        return None
+    return None
 
 
 SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 EN_POS_KEEP: set[str] = {"VERB", "AUX"}  # include AUX by default
+LEMMA_EXCLUDE: set[str] = {"preprint"}
 
 
 # ---------------------------
@@ -52,7 +92,7 @@ EN_POS_KEEP: set[str] = {"VERB", "AUX"}  # include AUX by default
 def extract_text_from_pdf(pdf_path: Path) -> str:
     """Extract text from PDF using PyMuPDF and remove trailing References-like sections."""
     try:
-        if fitz is None:  # type: ignore[truthy-function]
+        if fitz is None:
             raise ImportError("PyMuPDF (fitz) is not installed")
         doc = fitz.open(pdf_path)
         texts: list[str] = []
@@ -98,21 +138,43 @@ def sent_tokenize_simple(text: str) -> list[str]:
 # ---------------------------
 # NLP helpers
 # ---------------------------
-def verbs_from_english(text: str, include_aux: bool = True) -> Iterable[str]:
-    """Extract verb lemmas (and AUX if include_aux=True) from English text using spaCy.
-    No lemma exclusion list is applied.
+def is_counted_verb(token: Token, include_aux: bool) -> bool:
+    """Return True if token should be counted as a verb for our stats.
+    Uses strict morphological tags to reduce false positives.
+    - VERB: only VB* (VB, VBD, VBG, VBN, VBP, VBZ)
+    - AUX: included only when include_aux=True (VB* or MD for modals)
     """
-    if _NLP_EN is None:
-        raise RuntimeError("spaCy(en_core_web_sm)가 설치/다운로드되지 않았습니다.")
-    doc = _NLP_EN(text)
+    pos = token.pos_
+    tag = token.tag_
+    if pos == "VERB":
+        return tag.startswith("VB")
+    if pos == "AUX":
+        if not include_aux:
+            return False
+        return tag.startswith("VB") or tag == "MD"
+    return False
+
+
+def verbs_from_english(text: str, include_aux: bool = True) -> Iterable[str]:
+    """Extract verb lemmas (and AUX if include_aux=True) from English text using spaCy."""
+    nlp = get_nlp_en()
+    if nlp is None:
+        sys.stderr.write(
+            "[ERROR] spaCy English model not available. Install with one of:\n"
+            "  - uv sync   (pyproject includes en-core-web-sm)\n"
+            "  - uv pip install https://github.com/explosion/spacy-models/releases/download/"
+            "en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl\n"
+        )
+        return
+    doc = nlp(text)
     for token in doc:
-        if token.pos_ in EN_POS_KEEP:
-            if (not include_aux) and token.pos_ == "AUX":
-                continue
+        if is_counted_verb(token, include_aux=include_aux):
             lemma = token.lemma_.lower()
             if not lemma.isalpha():
                 continue
             if len(lemma) <= 2:
+                continue
+            if lemma in LEMMA_EXCLUDE:
                 continue
             yield lemma
 
@@ -214,12 +276,10 @@ def analyze_doc(
     voice_counts: Counter[str] = Counter()
 
     for token in doc:
-        if token.pos_ in EN_POS_KEEP:
-            if (not include_aux) and token.pos_ == "AUX":
-                continue
+        if is_counted_verb(token, include_aux=include_aux):
             # lemma
             lemma = token.lemma_.lower()
-            if lemma.isalpha() and len(lemma) > 2:
+            if lemma.isalpha() and len(lemma) > 2 and lemma not in LEMMA_EXCLUDE:
                 lemmas.append(lemma)
             # phrase
             phrase_tokens = build_verb_phrase(token)
@@ -240,45 +300,41 @@ def analyze_doc(
 def process_pdfs(
     input_dir: Path,
     include_aux_en: bool = True,
-    examples_top_k: int = 50,
-    examples_per_item: int = 2,
 ) -> tuple[
     Counter[str],
-    dict[str, list[str]],
     Counter[str],
-    dict[str, list[str]],
     Counter[str],
     Counter[str],
 ]:
-    """Scan PDFs, aggregate:
-      - verb lemma counts (+ examples),
-      - verb phrase counts (+ examples),
+    """Scan PDFs and aggregate:
+      - verb lemma counts,
+      - verb phrase counts,
       - tense distribution,
       - voice distribution
-    Returns:
-      verb_counts, verb_examples, phrase_counts, phrase_examples, tense_counts, voice_counts
+    Returns: verb_counts, phrase_counts, tense_counts, voice_counts
     """
     verb_counts: Counter[str] = Counter()
     phrase_counts: Counter[str] = Counter()
     tense_counts_total: Counter[str] = Counter()
     voice_counts_total: Counter[str] = Counter()
-    verb_examples: dict[str, list[str]] = defaultdict(list)
-    phrase_examples: dict[str, list[str]] = defaultdict(list)
 
-    pdfs: list[Path] = sorted(list(input_dir.rglob("*.pdf")))
+    # Find PDFs case-insensitively (handles .pdf, .PDF, mixed-case)
+    pdfs: list[Path] = sorted(
+        [p for p in input_dir.rglob("**/*") if p.is_file() and p.suffix.lower() == ".pdf"]
+    )
     if not pdfs:
         print(f"[INFO] No PDFs found under {input_dir.resolve()}")
-        return (
-            verb_counts,
-            verb_examples,
-            phrase_counts,
-            phrase_examples,
-            tense_counts_total,
-            voice_counts_total,
-        )
+        return (verb_counts, phrase_counts, tense_counts_total, voice_counts_total)
 
-    if _NLP_EN is None:
-        raise RuntimeError("spaCy(en_core_web_sm)가 설치/다운로드되지 않았습니다.")
+    nlp = get_nlp_en()
+    if nlp is None:
+        sys.stderr.write(
+            "[ERROR] spaCy English model not available. Install with one of:\n"
+            "  - uv sync   (pyproject includes en-core-web-sm)\n"
+            "  - uv pip install https://github.com/explosion/spacy-models/releases/download/"
+            "en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl\n"
+        )
+        return (verb_counts, phrase_counts, tense_counts_total, voice_counts_total)
 
     for pdf in tqdm(pdfs, desc="PDFs"):
         text = extract_text_from_pdf(pdf)
@@ -287,7 +343,7 @@ def process_pdfs(
 
         # Parse once per file
         try:
-            doc = _NLP_EN(text)
+            doc = nlp(text)
         except Exception as e:
             sys.stderr.write(f"[WARN] NLP processing failed for {pdf}: {e}\n")
             continue
@@ -300,108 +356,31 @@ def process_pdfs(
         tense_counts_total.update(tense_c)
         voice_counts_total.update(voice_c)
 
-        # Collect examples (sentence-level)
-        if examples_top_k > 0:
-            top_lemmas = {w for w, _ in verb_counts.most_common(examples_top_k * 3)}
-            top_phrases = {p for p, _ in phrase_counts.most_common(examples_top_k * 3)}
-            per_item_limit = examples_per_item
-
-            sents = sent_tokenize_simple(text)
-            for s in sents:
-                s_norm = s.strip()
-                if not s_norm or len(s_norm) > 500:
-                    continue
-                # Find lemmas in sentence
-                try:
-                    sdoc = _NLP_EN(s_norm)
-                except Exception:
-                    continue
-
-                # Lemma examples
-                s_lemmas = set()
-                for t in sdoc:
-                    if t.pos_ in EN_POS_KEEP:
-                        if (not include_aux_en) and t.pos_ == "AUX":
-                            continue
-                        l = t.lemma_.lower()
-                        if l in top_lemmas and len(verb_examples[l]) < per_item_limit:
-                            s_lemmas.add(l)
-                for l in s_lemmas:
-                    if len(verb_examples[l]) < per_item_limit:
-                        verb_examples[l].append(s_norm)
-
-                # Phrase examples (exact text match after build)
-                s_phrases_found = set()
-                for t in sdoc:
-                    if t.pos_ in EN_POS_KEEP:
-                        if (not include_aux_en) and t.pos_ == "AUX":
-                            continue
-                        p_tokens = build_verb_phrase(t)
-                        p_text = re.sub(r"\s+", " ", " ".join(p_tokens)).strip()
-                        if p_text in top_phrases and len(phrase_examples[p_text]) < per_item_limit:
-                            s_phrases_found.add(p_text)
-                for p_text in s_phrases_found:
-                    if len(phrase_examples[p_text]) < per_item_limit:
-                        phrase_examples[p_text].append(s_norm)
-
-    # Keep examples only for final top_k
-    if examples_top_k > 0:
-        top_lemmas_final = {w for w, _ in verb_counts.most_common(examples_top_k)}
-        verb_examples = {k: verb_examples[k] for k in top_lemmas_final if k in verb_examples}
-
-        top_phrases_final = {p for p, _ in phrase_counts.most_common(examples_top_k)}
-        phrase_examples = {k: phrase_examples[k] for k in top_phrases_final if k in phrase_examples}
-
-    return (
-        verb_counts,
-        verb_examples,
-        phrase_counts,
-        phrase_examples,
-        tense_counts_total,
-        voice_counts_total,
-    )
+    return (verb_counts, phrase_counts, tense_counts_total, voice_counts_total)
 
 
 # ---------------------------
 # Save utilities
 # ---------------------------
-def save_verb_csv(
-    verb_counts: Counter[str], verb_examples: dict[str, list[str]], out_csv: Path
-) -> pd.DataFrame:
+def save_verb_csv(verb_counts: Counter[str], out_csv: Path) -> DataFrame:
     if pd is None:
         raise RuntimeError("pandas가 설치되어 있지 않습니다.")
     rows: list[dict[str, object]] = []
     for rank, (lemma, cnt) in enumerate(verb_counts.most_common(), start=1):
-        rows.append(
-            {
-                "rank": rank,
-                "verb": lemma,
-                "count": cnt,
-                "examples": " || ".join(verb_examples.get(lemma, [])),
-            }
-        )
-    df = pd.DataFrame(rows, columns=["rank", "verb", "count", "examples"])
+        rows.append({"rank": rank, "verb": lemma, "count": cnt})
+    df = pd.DataFrame(rows, columns=["rank", "verb", "count"])
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv, index=False, encoding="utf-8")
     return df
 
 
-def save_phrase_csv(
-    phrase_counts: Counter[str], phrase_examples: dict[str, list[str]], out_csv: Path
-) -> pd.DataFrame:
+def save_phrase_csv(phrase_counts: Counter[str], out_csv: Path) -> DataFrame:
     if pd is None:
         raise RuntimeError("pandas가 설치되어 있지 않습니다.")
     rows: list[dict[str, object]] = []
     for rank, (phrase, cnt) in enumerate(phrase_counts.most_common(), start=1):
-        rows.append(
-            {
-                "rank": rank,
-                "verb_phrase": phrase,
-                "count": cnt,
-                "examples": " || ".join(phrase_examples.get(phrase, [])),
-            }
-        )
-    df = pd.DataFrame(rows, columns=["rank", "verb_phrase", "count", "examples"])
+        rows.append({"rank": rank, "verb_phrase": phrase, "count": cnt})
+    df = pd.DataFrame(rows, columns=["rank", "verb_phrase", "count"])
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv, index=False, encoding="utf-8")
     return df
@@ -428,65 +407,41 @@ def print_distributions(tense_counts: Counter[str], voice_counts: Counter[str]) 
         )
 
 
-# ---------------------------
-# CLI
-# ---------------------------
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Analyze English verbs/verb phrases, tense & voice from PDFs (References auto-removed)."
-    )
-    parser.add_argument("--input_dir", type=str, default="assets", help="PDF folder (recursive)")
-    parser.add_argument(
-        "--verbs_csv", type=str, default="verbs.csv", help="Output CSV for verb lemmas"
-    )
-    parser.add_argument(
-        "--phrases_csv", type=str, default="phrases.csv", help="Output CSV for verb phrases"
-    )
-    parser.add_argument(
-        "--exclude_aux", action="store_true", help="Exclude AUX from counting/phrases"
-    )
-    parser.add_argument(
-        "--examples_top_k", type=int, default=50, help="Keep examples for top-K items"
-    )
-    parser.add_argument(
-        "--examples_per_item", type=int, default=2, help="Examples per item to keep"
-    )
-    args = parser.parse_args()
+    """Run the analyzer with built-in defaults (no CLI options).
 
-    input_dir = Path(args.input_dir)
-    verbs_csv = Path(args.verbs_csv)
-    phrases_csv = Path(args.phrases_csv)
+    Defaults:
+    - input_dir: src/assets
+    - verbs_csv: src/verbs.csv
+    - phrases_csv: src/phrases.csv
+    - include_aux_en: False (exclude auxiliary/modal verbs)
+    """
+    input_dir = ASSET_DIR
+    verbs_csv = MODULE_DIR / "verbs.csv"
+    phrases_csv = MODULE_DIR / "phrases.csv"
 
     (
         verb_counts,
-        verb_examples,
         phrase_counts,
-        phrase_examples,
         tense_counts,
         voice_counts,
     ) = process_pdfs(
         input_dir=input_dir,
-        include_aux_en=not args.exclude_aux,
-        examples_top_k=args.examples_top_k,
-        examples_per_item=args.examples_per_item,
+        include_aux_en=False,
     )
 
     if not verb_counts and not phrase_counts:
         print("[INFO] No verbs/phrases extracted. Check PDFs or spaCy install.")
         return
 
-    df_verbs = save_verb_csv(verb_counts, verb_examples, verbs_csv)
-    df_phrases = save_phrase_csv(phrase_counts, phrase_examples, phrases_csv)
+    df_verbs = save_verb_csv(verb_counts, verbs_csv)
+    df_phrases = save_phrase_csv(phrase_counts, phrases_csv)
 
     print_distributions(tense_counts, voice_counts)
 
-    print("\n=== Top 30 verb lemmas ===")
-    for i, (w, c) in enumerate(verb_counts.most_common(30), 1):
-        print(f"{i:>2}. {w:<20} {c}")
-
-    print("\n=== Top 30 verb phrases ===")
-    for i, (p, c) in enumerate(phrase_counts.most_common(30), 1):
-        print(f"{i:>2}. {p:<40} {c}")
+    print("\n=== Top 100 verb lemmas ===")
+    for i, (w, c) in enumerate(verb_counts.most_common(100), 1):
+        print(f"{i:>3}. {w:<20} {c}")
 
     print(
         f"\n[OK] Saved:\n- {verbs_csv.resolve()} ({len(df_verbs)} rows)\n- {phrases_csv.resolve()} ({len(df_phrases)} rows)"
