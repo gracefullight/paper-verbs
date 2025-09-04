@@ -18,3 +18,8 @@ wheels/
 
 # OS
 .DS_Store
+
+# Project assets: ignore all PDFs and other files under src/assets,
+# but keep the placeholder file to retain the directory in git.
+src/assets/*
+!src/assets/.gitkeep
