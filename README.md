@@ -1,120 +1,73 @@
-# py-starter
+# paper-verbs
 
-This isn't just a collection of files. It's a foundation for **fast, modern, and reliable Python development**. It's designed to let you skip the tedious, error-prone setup and focus directly on building what matters.
+Analyze English verb usage from PDFs. Place your papers under `src/assets/` and run the analyzer to extract verb lemma frequencies, simple verb phrases, and tense/voice distributions. Results are printed to console and saved as CSVs under `src/`.
 
-I chose `uv` to fundamentally address the complexity of traditional Python environments, where `pip`, `venv`, and `pip-tools` are managed separately. `uv` unifies dependency management and script execution into a single, blazing-fast tool, dramatically boosting developer productivity.
+## Quick Start
 
-## Core Principles
+1) Ensure Python 3.12 is used (3.13 is not supported due to spaCy/NumPy ABI constraints):
 
-- **Speed:** Experience a near-instantaneous feedback loop. `uv` and `ruff` make dependency installation, linting, and formatting exceptionally fast.
-- **Simplicity:** Eliminate complexity. A single, unified tool (`uv`) manages your entire project's environment and dependencies.
-- **Reliability:** Build confidence from the first line of code. `ruff`, `mypy`, and `pytest` are integrated to prevent bugs and ensure stability.
-- **Automation:** Let the machine handle the checklist. `pre-commit` hooks automate all quality checks, catching issues before they ever become part of the codebase.
+```sh
+uv python install 3.12     # once
+uv sync                     # install dependencies + model
+```
 
-## Getting Started
+2) Put PDFs under `src/assets/` (recursive; `.pdf`/`.PDF` both supported).
 
-1. **Install dependencies**
-   This command sets up your project's environment with all the necessary libraries and tools.
-   ```sh
-   uv sync
-   ```
+3) Run the analyzer:
 
-2. **Set up pre-commit hooks** (optional but recommended)
-   Automate code quality checks before each commit.
-   ```sh
-   uv run pre-commit install
-   ```
+```sh
+uv run python src/main.py
+```
 
-3. **Run your project**
-   Execute the main application entrypoint to verify your setup is working correctly.
-   ```sh
-   uv run python src/main.py
-   # or using the alias
-   uv run poe run
-   ```
+## What It Does
 
-4. **Add or remove packages**
-   Seamlessly manage your project's third-party libraries.
-   ```sh
-   uv add <package>
-   uv remove <package>
-   ```
+- Scans `src/assets/` for PDFs and extracts text (PyMuPDF).
+- Removes trailing References/Bibliography/Acknowledgements heuristically.
+- Uses spaCy (en_core_web_sm) to parse and collect:
+  - Verb lemmas (AUX/modals excluded by default; e.g., can/would/have)
+  - Simple verb phrases around each counted verb
+  - Tense and voice distributions
+- Prints the top 100 verb lemmas to console.
+- Saves CSVs under `src/`:
+  - `src/verbs.csv` with columns: `rank, verb, count`
+  - `src/phrases.csv` with columns: `rank, verb_phrase, count`
 
-## Code Quality Management
+Notes
+- The lemma `preprint` is excluded from counts.
+- No CLI flags: defaults are baked in. Just run the script.
 
-- **Lint & Format:** Inconsistent code style and potential errors create friction and lead to bugs. `ruff` solves both problems at once with incredible speed.
+## Development
 
-  ```sh
-  # Check for style issues and potential errors
-  uv run ruff check src/ tests/
-  # or using alias
-  uv run poe lint
+Common tasks (via poe):
 
-  # Automatically format all code
-  uv run ruff format src/ tests/
-  # or using alias
-  uv run poe format
-  ```
+```sh
+uv run poe run         # run app
+uv run poe test        # tests (pytest)
+uv run poe test-cov    # tests with coverage
+uv run poe lint        # ruff check
+uv run poe format      # ruff format
+uv run poe type-check  # mypy (strict)
+uv run poe all-checks  # all of the above
+```
 
-- **Type Check:** Runtime `TypeError`s are a common source of bugs. `mypy` performs static analysis to catch these errors before you ever run the code, making your application more robust.
+## Troubleshooting
 
-  ```sh
-  uv run mypy src/
-  # or using alias
-  uv run poe type-check
-  ```
-
-- **Pre-commit Hooks:** Great tools are useless if you forget to run them. `pre-commit` automates your quality checks, running them every time you commit. This fundamentally prevents low-quality code from entering your repository.
-
-  ```sh
-  # Run all configured hooks manually across all files
-  uv run pre-commit run --all-files
-  # or using alias
-  uv run poe pre-commit
-  ```
-
-- **Run All Checks:** Execute all quality checks at once.
-
-  ```sh
-  uv run poe all-checks
-  ```
-
-## Testing
-
-- **Run Tests:** Verify that your code behaves exactly as you intend. Tests are the cornerstone of reliable software.
-
-  ```sh
-  uv run pytest tests/
-  # or using alias
-  uv run poe test
-  ```
-
-- **Check Test Coverage:** Measure what percentage of your codebase is protected by tests. This metric is crucial for identifying untested areas and increasing confidence in your code's stability.
-
-  ```sh
-  uv run pytest tests/ --cov=src
-  # or using alias
-  uv run poe test-cov
-  ```
-
-## Available Scripts
-
-The project includes several convenient aliases using `poethepoet`:
-
-- `uv run poe run` - Run the main application
-- `uv run poe test` - Run tests
-- `uv run poe test-cov` - Run tests with coverage
-- `uv run poe lint` - Check code style and potential errors
-- `uv run poe format` - Format code
-- `uv run poe type-check` - Run type checking
-- `uv run poe pre-commit` - Run all pre-commit hooks
-- `uv run poe all-checks` - Run all quality checks (lint, format, type-check, test)
+- spaCy model not found / load fails:
+  - This project pins and installs `en_core_web_sm` via `pyproject.toml`. Run `uv sync`.
+  - Verify: `uv run python -c "import en_core_web_sm; en_core_web_sm.load(); print('OK')"`
+- NumPy/Thinc/Blis errors (e.g., dtype size changed or build failures):
+  - Use Python 3.12. Run `uv python install 3.12` then `uv sync --reinstall`.
+- PDFs with only scanned images will have little/no text extracted. OCR is required to analyze such files.
 
 ## Requirements
 
-- Python >=3.13
+- Python >=3.12,<3.13
 - uv (install via `pip install uv`)
 
----
+## Project Layout
 
-Feel free to fork this project and use it as your own template!
+- `src/main.py` – entrypoint that runs `paper_verbs.main()`
+- `src/paper_verbs.py` – analyzer logic
+- `src/assets/` – put your PDFs here
+- `src/verbs.csv`, `src/phrases.csv` – outputs
+- `tests/` – pytest suite

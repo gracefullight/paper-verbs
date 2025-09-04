@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 from pandas import DataFrame
 from spacy.language import Language
 from spacy.tokens import Doc, Token
@@ -363,8 +364,6 @@ def process_pdfs(
 # Save utilities
 # ---------------------------
 def save_verb_csv(verb_counts: Counter[str], out_csv: Path) -> DataFrame:
-    if pd is None:
-        raise RuntimeError("pandas가 설치되어 있지 않습니다.")
     rows: list[dict[str, object]] = []
     for rank, (lemma, cnt) in enumerate(verb_counts.most_common(), start=1):
         rows.append({"rank": rank, "verb": lemma, "count": cnt})
@@ -375,8 +374,6 @@ def save_verb_csv(verb_counts: Counter[str], out_csv: Path) -> DataFrame:
 
 
 def save_phrase_csv(phrase_counts: Counter[str], out_csv: Path) -> DataFrame:
-    if pd is None:
-        raise RuntimeError("pandas가 설치되어 있지 않습니다.")
     rows: list[dict[str, object]] = []
     for rank, (phrase, cnt) in enumerate(phrase_counts.most_common(), start=1):
         rows.append({"rank": rank, "verb_phrase": phrase, "count": cnt})
